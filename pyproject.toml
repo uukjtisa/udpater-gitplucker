@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "updater-gitplucker"
-version = "0.7.0"
+version = "0.7.1"
 description = "Modular, pluggable GitHub updater library for Python-glued projects (release / source / python-source channels with 3-way merge and dependency auto-detection)."
 readme = "README.md"
 requires-python = ">=3.10"

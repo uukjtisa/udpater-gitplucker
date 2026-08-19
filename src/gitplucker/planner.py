@@ -79,8 +79,21 @@ def build_file_plan(
         base_text = state.read_base_file(sub.repo, branch, rel)
         locally_modified = False
         if base_text is not None:
-            base_hash = sha256_bytes(base_text.encode("utf-8", "replace"))
-            locally_modified = base_hash != local_hash
+            if change_is_text:
+                # Compare DECODED, newline-normalized text -- never raw bytes.
+                # local_hash hashes the file as it sits on disk, but Windows
+                # writes text files with os.linesep, so an installed file is
+                # CRLF while the baseline copied straight from the payload is
+                # LF. Hashing those against each other marks EVERY file on
+                # Windows as locally modified, which forces every update
+                # through the 3-way merge path and (against a stale ancestor)
+                # manufactures conflicts in files nobody ever edited.
+                # _read_text and read_base_file both apply universal newlines,
+                # so this comparison is line-ending agnostic by construction.
+                locally_modified = _read_text(install_path) != base_text
+            else:
+                base_hash = sha256_bytes(base_text.encode("utf-8", "replace"))
+                locally_modified = base_hash != local_hash
 
         can_merge = (
             sub.channel is Channel.PYTHON_SOURCE

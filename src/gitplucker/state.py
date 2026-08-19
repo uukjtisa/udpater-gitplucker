@@ -71,15 +71,35 @@ class StateStore:
                 return None
         return None
 
-    def snapshot_base(self, repo: str, branch: str, payload_root: Path, relpaths: list[str]) -> None:
+    def snapshot_base(self, repo: str, branch: str, payload_root: Path,
+                      relpaths: list[str], *, replace: bool = True) -> None:
+        """Record the common ancestor the next 3-way merge will diff against.
+
+        ``replace=True`` (a FULL apply) rebuilds the whole baseline from the
+        payload. ``replace=False`` (a PARTIAL apply) merges just ``relpaths``
+        into the existing baseline, leaving the entries for unselected files
+        alone — they were not updated on disk either, so their old ancestor is
+        still the correct one.
+
+        Partial applies used to skip this entirely. The applied files then kept
+        a stale ancestor forever, so every later check saw them as "locally
+        modified" and 3-way merged them against content that was already
+        superseded — which surfaced as conflicts in files the user had never
+        edited. See test_partial_apply_baseline.py.
+        """
         base = self.base_dir(repo, branch)
-        if base.exists():
+        if replace and base.exists():
             shutil.rmtree(base, ignore_errors=True)
         for rel in relpaths:
             src = Path(payload_root) / rel
-            if not src.is_file():
-                continue
             dst = base / rel
+            if not src.is_file():
+                # Upstream no longer ships this path and the user applied that
+                # deletion: drop it from the baseline too, or it stays the
+                # ancestor of a file that no longer exists.
+                if not replace and dst.is_file():
+                    dst.unlink()
+                continue
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dst)
 

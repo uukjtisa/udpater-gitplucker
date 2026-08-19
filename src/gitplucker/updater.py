@@ -246,15 +246,29 @@ class Updater:
                     result.message += f"\n[deps] pip reported errors:\n{out[-1000:]}"
 
         # Record the new baseline so the next merge has a common ancestor.
-        # A partial apply must NOT overwrite the whole baseline (unselected files
-        # weren't updated), so the version/base snapshot is only advanced on a
-        # full apply. Partial applies stay on the previous baseline version.
-        if result.success and not partial and not plan._is_package and plan._payload_root:
-            payload_files = list_files(plan._payload_root, sub.include_globs, sub.exclude_globs)
-            self.state.snapshot_base(sub.repo, plan.branch, plan._payload_root, payload_files)
-            self.state.set_known_modules(
-                sub.repo, plan.branch, set(scan_imports(plan._payload_root).keys())
-            )
+        #
+        # A partial apply must not overwrite the baseline for UNSELECTED files —
+        # those were not updated on disk, so their old ancestor is still right.
+        # But it must absolutely refresh the baseline for the files it DID
+        # apply: those now hold upstream content, and leaving their ancestor
+        # behind makes them read as "locally modified" on every later check and
+        # 3-way merges them against superseded content, producing conflicts in
+        # files the user never edited. The version MARKER still only advances on
+        # a full apply — that part was always correct.
+        if result.success and not plan._is_package and plan._payload_root:
+            if partial:
+                self.state.snapshot_base(
+                    sub.repo, plan.branch, plan._payload_root,
+                    sorted(plan._selected or ()), replace=False,
+                )
+            else:
+                payload_files = list_files(plan._payload_root, sub.include_globs,
+                                           sub.exclude_globs)
+                self.state.snapshot_base(sub.repo, plan.branch, plan._payload_root,
+                                         payload_files, replace=True)
+                self.state.set_known_modules(
+                    sub.repo, plan.branch, set(scan_imports(plan._payload_root).keys())
+                )
         if result.success and not partial and plan.target_version:
             self.state.set_version(sub.repo, plan.branch, plan.target_version)
         if partial:

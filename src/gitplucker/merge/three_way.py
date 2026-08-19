@@ -13,6 +13,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 
+# Spelled via chr() so the line-ending logic below never depends on how
+# an escape survives an editor, a patch, or a copy-paste.
+LF = chr(10)
+CR = chr(13)
+CRLF = CR + LF
+
 
 @dataclass
 class MergeResult:
@@ -33,6 +39,9 @@ def _index_map(base: list[str], other: list[str]) -> dict[int, int]:
 
 
 def merge_lines(
+    # NOTE: expects lines already normalized to LF terminators — callers should
+    # use merge_text, which handles that. Comparing raw CRLF against LF here
+    # anchors nothing and yields a whole-file conflict.
     base: list[str],
     local: list[str],
     remote: list[str],
@@ -86,6 +95,44 @@ def merge_lines(
     )
 
 
+# ── Line endings ────────────────────────────────────────────
+# The merge compares whole lines INCLUDING their terminator (splitlines with
+# keepends), so "import os\r\n" and "import os\n" are DIFFERENT lines.
+# base and remote arrive from the upstream payload (LF); local is the file on
+# the user's disk, which on Windows is usually CRLF. Left alone, every line of
+# every file mismatches, SequenceMatcher finds no anchors at all, and the whole
+# file comes back as one conflict region -- a "conflict" in a file the user
+# never touched. That was the real-world symptom: "there are no modifications
+# from me but it still says conflict".
+#
+# So: normalize all three sides to LF for the comparison, and hand the merged
+# text back in the LOCAL file's own convention, since that is the file being
+# rewritten on disk. Anything else rewrites every line of the user's file and
+# shows up as a whole-file diff on the very next check.
+
+
+def _dominant_eol(text: str) -> str:
+    """The line ending this text mostly uses. Defaults to LF (empty/one-line)."""
+    crlf = text.count(CRLF)
+    cr = text.count(CR) - crlf
+    lf = text.count(LF) - crlf
+    if crlf and crlf >= lf and crlf >= cr:
+        return CRLF
+    if cr and cr > lf:
+        return CR
+    return LF
+
+
+def _to_lf(text: str) -> str:
+    """Collapse CRLF and lone CR to LF so the three sides are comparable."""
+    return text.replace(CRLF, LF).replace(CR, LF)
+
+
+def _restore_eol(text: str, eol: str) -> str:
+    """Re-apply a line-ending convention to LF-normalized text."""
+    return text if eol == LF else text.replace(LF, eol)
+
+
 def merge_text(
     base_text: str,
     local_text: str,
@@ -93,12 +140,19 @@ def merge_text(
     local_label: str = "LOCAL",
     remote_label: str = "REMOTE",
 ) -> MergeResult:
-    return merge_lines(
-        base_text.splitlines(keepends=True),
-        local_text.splitlines(keepends=True),
-        remote_text.splitlines(keepends=True),
+    eol = _dominant_eol(local_text)
+    res = merge_lines(
+        _to_lf(base_text).splitlines(keepends=True),
+        _to_lf(local_text).splitlines(keepends=True),
+        _to_lf(remote_text).splitlines(keepends=True),
         local_label,
         remote_label,
+    )
+    return MergeResult(
+        text=_restore_eol(res.text, eol),
+        conflicts=res.conflicts,
+        conflict_lines=res.conflict_lines,
+        clean=res.clean,
     )
 
 
@@ -154,8 +208,11 @@ def annotate_three_way(base: list[str], local: list[str], remote: list[str]):
 
 
 def annotate_three_way_text(base_text: str, local_text: str, remote_text: str):
+    """Origin-tagged review of a 3-way merge. Line endings are normalized to LF
+    first for the same reason merge_text does it — otherwise a CRLF working copy
+    tags every line of an untouched file as a conflict (see _dominant_eol)."""
     return annotate_three_way(
-        base_text.splitlines(keepends=True),
-        local_text.splitlines(keepends=True),
-        remote_text.splitlines(keepends=True),
+        _to_lf(base_text).splitlines(keepends=True),
+        _to_lf(local_text).splitlines(keepends=True),
+        _to_lf(remote_text).splitlines(keepends=True),
     )
